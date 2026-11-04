@@ -1,0 +1,182 @@
+name: 與上游同步
+
+# 每天約台北時間 03:00（台灣無日光節約，等於 19:00 UTC）執行。
+# GitHub Actions 的 cron 只吃 UTC。
+# 只用 GITHUB_TOKEN 呼叫 merge-upstream，把上游預設分支併進本 fork 的預設分支。
+# 這個檔案沒有 git push，也沒有 force-push。衝突時讓 job 失敗；Issues 有開才開單。
+
+on:
+  schedule:
+    - cron: "0 19 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: 併入上游預設分支
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 透過 merge-upstream API 同步
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const conflictTitle = "upstream-sync-conflict：預設分支與上游合併衝突，需要手動處理";
+
+            function apiMessage(error) {
+              const data = error && error.response && error.response.data;
+              if (data && typeof data.message === "string" && data.message) {
+                return data.message;
+              }
+              if (error && typeof error.message === "string" && error.message) {
+                return error.message;
+              }
+              return "未知錯誤";
+            }
+
+            function statusOf(error) {
+              if (error && typeof error.status === "number") return error.status;
+              if (error && error.response && typeof error.response.status === "number") {
+                return error.response.status;
+              }
+              return undefined;
+            }
+
+            async function recordConflict(repoData, branch, upstream, upstreamBranch, detail) {
+              if (!repoData.has_issues) {
+                core.warning("此倉庫未啟用 Issues，略過開立 issue。衝突仍會使這個 workflow 失敗。");
+                return;
+              }
+
+              const lines = [
+                "自動同步因與上游發生合併衝突而停止，**沒有** force-push，也沒有改寫預設分支。",
+                "",
+                `- 時間（UTC）：${new Date().toISOString()}`,
+                `- 執行紀錄：${runUrl}`,
+                `- 本倉庫預設分支：\`${branch}\``,
+                `- 上游：\`${upstream}\`（預設分支 \`${upstreamBranch}\`）`,
+                "- API：`POST /repos/{owner}/{repo}/merge-upstream`",
+                "- HTTP 409：分支因合併衝突無法與上游同步",
+              ];
+              if (detail) {
+                lines.push("", "API 訊息：", "", "```", detail, "```");
+              }
+              lines.push(
+                "",
+                "請在本機解開衝突後，用一般 push（不要加 `--force`）更新預設分支。衝突排除後可關閉這則 issue。",
+              );
+              const body = lines.join("\n");
+
+              let existing = null;
+              try {
+                const issues = await github.paginate(github.rest.issues.listForRepo, {
+                  owner,
+                  repo,
+                  state: "open",
+                  per_page: 100,
+                });
+                existing = issues.find((issue) => issue.title === conflictTitle && !issue.pull_request) || null;
+              } catch (listError) {
+                const listStatus = statusOf(listError);
+                if (listStatus === 410) {
+                  core.warning("Issues 已停用（HTTP 410），略過開立 issue。");
+                  return;
+                }
+                core.warning(`讀取既有 issue 失敗，改為直接開立：${apiMessage(listError)}`);
+              }
+
+              if (existing) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: existing.number,
+                  body,
+                });
+                core.notice(`衝突仍在。已於既有 issue #${existing.number} 補上記錄。`);
+                return;
+              }
+
+              const created = await github.rest.issues.create({
+                owner,
+                repo,
+                title: conflictTitle,
+                body,
+              });
+              core.notice(`已開立 issue #${created.data.number}：${created.data.html_url}`);
+            }
+
+            const { data: repoData } = await github.rest.repos.get({ owner, repo });
+            if (!repoData.fork || !repoData.parent || !repoData.parent.full_name) {
+              core.setFailed("此倉庫不是 fork，或 API 沒有回傳上游 parent，無法呼叫 merge-upstream。");
+              return;
+            }
+
+            const branch = repoData.default_branch;
+            const upstream = repoData.parent.full_name;
+            const upstreamBranch = repoData.parent.default_branch;
+
+            core.info(`以 merge-upstream 將 ${upstream}@${upstreamBranch} 併入 ${owner}/${repo}@${branch}。`);
+            core.info("不使用 git push，也不使用 force-push。");
+
+            async function writeSummary(title, raw) {
+              try {
+                await core.summary.addHeading(title).addRaw(raw).addEOL().write();
+              } catch (summaryError) {
+                core.warning(`無法寫入 job summary：${apiMessage(summaryError)}`);
+              }
+            }
+
+            let response;
+            try {
+              response = await github.rest.repos.mergeUpstream({
+                owner,
+                repo,
+                branch,
+              });
+            } catch (error) {
+              const status = statusOf(error);
+              const message = apiMessage(error);
+              if (status === 409) {
+                core.error(`與上游 ${upstream} 合併衝突。拒絕 force-push。${message}`);
+                try {
+                  await recordConflict(repoData, branch, upstream, upstreamBranch, message);
+                } catch (issueError) {
+                  const issueStatus = statusOf(issueError);
+                  if (issueStatus === 410) {
+                    core.warning("Issues 已停用（HTTP 410），略過開立 issue。");
+                  } else {
+                    core.error(`無法開立或更新衝突 issue：${apiMessage(issueError)}`);
+                  }
+                }
+                await writeSummary("上游同步失敗：合併衝突", "merge-upstream 回傳 HTTP 409。這個 workflow 沒有 force-push。");
+                core.setFailed(`上游同步失敗：預設分支 ${branch} 與 ${upstream}@${upstreamBranch} 發生合併衝突（HTTP 409）。未執行 force-push。`);
+                return;
+              }
+
+              if (status === 422 && /workflow/i.test(message)) {
+                core.error("GITHUB_TOKEN 不能改 .github/workflows 裡的檔案，所以這次沒有把上游的 workflow 變更寫進預設分支，也沒有 force-push。");
+              }
+              core.setFailed(`上游同步失敗（HTTP ${status || "unknown"}）：${message}`);
+              return;
+            }
+
+            const mergeType = response.data.merge_type;
+            const message = response.data.message || "";
+            if (!["merge", "fast-forward", "none"].includes(mergeType)) {
+              core.warning(`未預期的 merge_type：${mergeType}`);
+            }
+            core.info(`同步成功：${message}（merge_type=${mergeType}，base_branch=${response.data.base_branch}）`);
+            await writeSummary(
+              "上游同步完成",
+              `\`${upstream}@${upstreamBranch}\` → \`${owner}/${repo}@${branch}\`（${mergeType}）。${message}`,
+            );
