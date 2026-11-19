@@ -10,9 +10,15 @@ ADAPTER_MODULES = (
     "workflow_material_receipts.py", "workflow_transport.py", "workflow_audit_binding.py",
     "workflow_context_chain.py", "workflow_render_retry.py", "workflow_binding_fixture.py",
     "workflow_primitives.py", "workflow_contract_source.py", "workflow_receipt_store.py", "public_workflow_sources.py",
+    "workflow_chapter_contract.py", "workflow_longform_runtime.py", "workflow_longform.py",
 )
-ADAPTER_FILES = (*ADAPTER_MODULES, "workflow_contract.json")
+ADAPTER_FILES = (*ADAPTER_MODULES, "workflow_contract.json", "workflow_longform_contract.json")
 PUBLIC_ONLY_MODULES = frozenset(("public_workflow_sources.py",))
+# The public ports of the canonical long-form session controller (create-longform)
+# have canonical analogues that stay private (sync never copies them). Every
+# analogue's reviewed pin lives in the private control file next to the canonical
+# Skill, so a changed analogue blocks sync until its port is reviewed again,
+# without publishing private hashes.
 
 
 def render_forwarder(name: str, source_names: tuple[str, ...] = ()) -> str:
@@ -36,14 +42,14 @@ def _public_adapter_sources(distribution: Path, read_source) -> dict[str, str]:
             for node in ast.walk(ast.parse(text)):
                 modules = ([node.module or ""] if isinstance(node, ast.ImportFrom) else
                            [a.name for a in node.names] if isinstance(node, ast.Import) else [])
-                if any(module.startswith(("workflow_original", "workflow_painted", "workflow_longform")) for module in modules):
+                if any(module.startswith(("workflow_original", "workflow_painted")) for module in modules):
                     raise ValueError("Public media-only adapter imported an undistributed branch: " + name)
     return sources
 
 
 def validate_adapters(canonical: Path, distribution: Path, read_source) -> None:
     """Preflight the complete public shape, then pin its canonical provenance."""
-    from public_sync_inventory import CANONICAL_PUBLIC_OWNED_PINS
+    from public_sync_inventory import load_private_control
     sources = _public_adapter_sources(distribution, read_source)
     state = ast.parse(sources["workflow_state.py"])
     declaration = next(n.value for n in state.body if isinstance(n, ast.Assign)
@@ -57,6 +63,7 @@ def validate_adapters(canonical: Path, distribution: Path, read_source) -> None:
     expected = {name: "src/" + name for name in ADAPTER_MODULES}
     if manifest.get("codex_skill", {}).get("materialize_from") != expected:
         raise ValueError("Public standalone Skill materialization contract drift")
+    pins = load_private_control(canonical)["pins"]
     for name in ADAPTER_FILES:
         private_text = None
         if name in PUBLIC_ONLY_MODULES:
@@ -64,11 +71,14 @@ def validate_adapters(canonical: Path, distribution: Path, read_source) -> None:
                 raise ValueError("New canonical analogue requires explicit adapter review: " + name)
         else:
             private_text = read_source(canonical / name)
-            pin = CANONICAL_PUBLIC_OWNED_PINS["root"].get(name)
-            # Inventory pins use original physical bytes, not normalized text hashes.
+            pin = pins.get(name)
+            # Reviewed pins use original physical bytes, not normalized text hashes.
             if not pin or hashlib.sha256((canonical / name).read_bytes()).hexdigest() != pin:
                 raise ValueError("Public workflow canonical analogue changed: " + name)
-        if not name.endswith(".py"):
+        if name == "workflow_longform_contract.json":
+            if json.loads(private_text) != json.loads(sources[name]):
+                raise ValueError("Public long-form session contract differs from its canonical analogue")
+        elif not name.endswith(".py"):
             origin, public = json.loads(private_text), json.loads(sources[name])
             for key in ("schema", "contract_revision", "plan_schema", "legacy_plan_policy", "engine_continuity_floor", "limits"):
                 if origin.get(key) != public.get(key):

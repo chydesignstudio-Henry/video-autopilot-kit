@@ -1,3 +1,407 @@
+## v0.28.1 — 2026-11-12
+
+Public-tree cleanup. No new workflow feature. What a run binds is unchanged (`SKILL.md`, revision 6
+`workflow_contract.json`, `workflow_longform_contract.json` and every workflow executable source), so runs in
+progress continue.
+
+### Neutral module names
+
+- Two modules have neutral names now: the high-information editing planner is `src/high_information_editing.py` and
+  the effect evidence source map is `src/effect_source_map.py`. Imports, health checks, the generated manifests and
+  the sync catalog use the new names; code that imported the old module names must import the new ones, including
+  the helpers `asset_workshop.py` re-exports (now `effect_asset_backlog`, `load_effect_source_map` and
+  `validate_effect_source_map`).
+- The asset workshop plan's source-map section is now keyed `effect_source_map`.
+- `src/effect_source_map.py` finds the project root with `project_paths.discover_project_root()` and falls back to
+  the kit root (it used to always use two levels above the repository).
+
+### Neutral folder defaults (migration)
+
+- The publish hub's default folders are `videos/_INBOX/vertical` (Shorts), `videos/_INBOX/landscape-longform`
+  (long-form) and `videos/_ready-shorts` (the older ready-to-publish folder), and the hub only looks there. The
+  separate legacy root `videos/_READY_TO_PUBLISH` is not affected. If you kept the previous defaults (`SHORTS_ROOT`,
+  `LONGFORM_ROOT` and `LEGACY_READY` in `publish_hub_context.py`), move those folders to the new names, and:
+  - publish or finish what is in review first if you can: review evidence is bound to the file's path, so certified
+    items that are not yet published go back to review after the move and need a new review, and review bundles
+    made before the move must be recreated;
+  - packages published before the move keep their recorded source path, so `publish_hub.py audit` and the workspace
+    migration keep reporting them as pointing at a non-canonical source; that is expected for those packages.
+- An automatic update stops before v0.28.1 (the hop is outside the automatic-migration window); read this section
+  before upgrading by hand. From v0.28.1 on, a confirmation result also carries the migration notes, and later patch
+  releases update automatically again. The quality-95 and storage-lifecycle references and the release self-test
+  fixture use the new names.
+
+### Public sync and release hygiene
+
+- `sync-receipt.json` schema v4 records public output hashes only; `release_manager.py build` validates v4.
+- `scripts/public_sync_catalog.json` carries only public names. Reviewed pins (including the long-form ports),
+  maintainer-only text patterns and maintainer-only terms are read from the maintainer's private control file (schema
+  v3) at sync time. An output that matches a private pattern or term is removed and the sync stops; if a sync stops
+  for any other reason, outputs it already wrote are checked and removed the same way. The kit's own files (docs,
+  scripts, manifests) are checked against the same patterns, and a match stops the sync.
+- Privacy patterns are structural: drive-rooted paths use the repository gate's own rule, the b-roll renderer checks
+  for a creator keyword map by shape and rewrites exactly its three report labels (a canonical change to them stops
+  the sync).
+- Shipped references leave out pointers to things the public kit does not have (new
+  `scripts/public_reference_filter.py`). A pointer is a same-folder link to an unshipped sibling reference, a relative
+  link or link definition to a private file, a TypeScript source path or an unshipped module, or an inline-code span
+  naming an unshipped `references/` file, a private document, a private module (as `module.attribute`, through its
+  package, or in an import or `-m` run), a Python module the kit does not ship or a TypeScript source path;
+  plain-text mentions are not pointers. A text block holding a pointer outside its list items or table rows goes
+  whole; otherwise only the offending item (or nested item, with its continuation paragraphs), row or definition
+  goes, and ordered lists are renumbered. A heading whose own line holds a pointer goes with its section, an intro (a
+  sentence or last list item ending in a colon) goes when what it introduced went, a heading whose section emptied
+  goes too, and so do table-of-contents links to the sections that went. In fenced code, only the commands that run
+  such a module go (with their own comment); a block left with only comments or directory changes, a continued
+  command, a here-document, a Python block that calls a private module, or a block that imports a private module
+  (also through `python -c` or a here-document) goes whole. A recognised pointer the filter leaves in place stops
+  the sync. Several references are shorter for this, and some sentences are reworded so a public rule stays while
+  its pointer goes; those rewordings must match the canonical text, or the sync stops.
+- A synced module that imports a module the private control file lists as not shipped (import statements, package
+  imports and `import_module` calls) now stops the sync; one existing optional code path is listed as known.
+- Tests: `scripts/test_public_sync_rules.py` covers the pointer filter, the reworded references and their required
+  matches, the folder defaults, the structural privacy patterns, the b-roll labels, the private-term replacement and
+  output cleanup, the kit-file check and the import guard; the receipt schema and the private control file are
+  covered by `scripts/public_sync_selftest.py` and the inventory self-test.
+
+### Maintainer self-test
+
+- The `project_kernel` sync self-test is split in two functions (copy behaviour, canonical-Skill guard).
+
+### Release metadata
+
+- `release-manifest.json`: version 0.28.1 (suite components too), the new filter script as a required path, an
+  upgrade window that asks for an explicit upgrade into v0.28.1 and keeps later patches automatic, and only
+  structural deny patterns (maintainer-specific patterns are checked at sync time). `src/release_install.py` adds the
+  migration notes to a confirmation result.
+
+## v0.28.0 — 2026-11-12
+
+Maintenance and cleanup release. No new feature. v0.27.0 was merged without a separate tag or release; v0.28.0
+supersedes it and includes everything listed under v0.27.0 below.
+
+Revision 6 `workflow_contract.json`, `workflow_longform_contract.json` and every workflow executable source are
+byte-identical to v0.27.0. The bundled Skill changed in two files (`SKILL.md` and the shot-selection reference, see
+below). A run binds the hash of the installed `SKILL.md`, so finish runs started on v0.26.x or v0.27.x before
+re-syncing the installed Skill (`install_or_upgrade.py --apply --install-skill` or
+`python src/release_manager.py install-skill`), or start new runs afterwards.
+
+### Shot-selection reference trimmed to general rules
+
+- `codex-skill/video-autopilot/references/shot-selection-language.md` is now a short, fixed set of general
+  shot-selection rules, and `SKILL.md` points to them ("the evidence-gated rules").
+- The public sync always publishes that fixed text for this reference and stops if anything else would be
+  published. Covered by `scripts/test_public_sync_rules.py`.
+
+### A copy can no longer overwrite the canonical Skill
+
+- `project_kernel.py`: for a Skill whose manifest entry declares `source_authority` (`codex-canonical`),
+  `sync apply` refuses before comparing or writing anything when the resolved canonical folder is not the
+  destination (`status: REFUSED`, also with `--accept-source-conflicts`); a canonical Skill found inside the
+  workspace is rejected (`Canonical Skill must live outside the workspace`); syncing a canonical Skill onto itself
+  only records hashes. New `sync record` action re-records the managed hashes of canonical Skills from the
+  canonical tree and refuses workspace-authored Skills. A refused apply or record reports `status: REFUSED` and
+  exits 1; a configuration error (for example a canonical Skill inside the workspace) prints
+  `SYNC REFUSED <reason>` and exits 2.
+- `skill_sync.py`: `sync()` takes `protected=` (default `~/.codex/skills/video-autopilot`) and returns `REFUSED`
+  with zero copies when that folder is the destination and the source is another tree.
+- Both behaviours have self-test coverage (`project_kernel.py selftest`, `skill_sync.py selftest`). The stock public
+  `AUTOPILOT_MANIFEST.json` declares no canonical Skill, so with it `sync apply` behaves as before and
+  `sync record` refuses its workspace-authored Skill (REFUSED, exit 1).
+
+### Manifest Skill-relative paths
+
+- `project_paths.py`: new `manifest_skill_root()` and `resolve_manifest_path()`. A manifest value
+  `@<skill-id>/<relative path>` resolves inside that Skill's folder: for a Skill with `source_authority`, its
+  canonical folder (from the `source_authority` environment variable, else `~/.codex/skills/<destination>`); for a
+  workspace-authored Skill, its workspace `source` folder. Any other value stays workspace-relative; an undeclared
+  Skill id raises `ValueError`.
+- `project_kernel.py` uses it for `required_paths` (doctor), the knowledge line budgets and the source audit;
+  `project_source_metrics.source_audit()` takes an optional `resolve` callable and labels findings with the
+  manifest spelling. The public `AUTOPILOT_MANIFEST.json` has no `@` paths, so public behaviour is unchanged.
+
+### Project-root discovery
+
+- `asset_license_governance.py` finds the project root with `project_paths.discover_project_root()`, falling
+  back to the kit root.
+- `audit.config.json`: the `src/project_paths.py` fan-in exception limit is raised from 30 to 40 (expires
+  2026-12-31); the public tree stays well under both.
+
+### Documentation
+
+- `knowledge/ops-automation.md` now describes running `src/channel_tracker.py` on demand instead of a daily
+  scheduled AI task. The safety rules for acting on due items are unchanged. `knowledge/README.md` updated to
+  match.
+- Fixed stale paths: the tracker state is `data/channel_state.json` (what `channel_tracker.py` reads; `data/` is
+  git-ignored), not the repository root (`knowledge/ops-automation.md`, `examples/README.md` and the hint
+  `src/interview_autopilot.py` prints when the state file is missing); delivery QA is `final_delivery_qa()` in
+  `src/media_delivery_qa.py`, not `delivery_qa.py`; the plan and script gates are under `src/longform_maker/`.
+- Number-splitting examples in a `src/longform_maker/caption_grouping.py` comment use neutral figures.
+- `src/publish_hub_context.py` reads the same `data/channel_state.json` as the tracker (it read
+  `src/channel_state.json`, a file nothing writes).
+
+### Public sync
+
+- Reference pages: during sync, a paragraph that links a sibling reference the public Skill does not ship is
+  left out (`drop_unshipped_reference_paragraphs`), so no public reference carries a Markdown link to a
+  sibling it does not ship (same-folder links); such a link was previously caught only by the link check.
+- Cleanup config: a dated change note in an architecture exception reason describes the maintained source, not
+  this tree, and is left out of the public `audit.config.json`; any other date left in such a reason stops the
+  sync.
+- `scripts/public_sync_transforms.py`: the public kit-root fallback above, the caption example figures, the
+  `publish_hub_context.py` state path, neutral environment variable names in two self-tests, the
+  `project_kernel.py` CLI description (the rule now targets `project_kernel_commands.py`, where the text lives),
+  maintainer change dates left out of the comments of `project_kernel.py`, `project_kernel_commands.py`,
+  `project_paths.py` and `skill_sync.py` (the sync stops if one survives there), and a `skill_sync.py selftest`
+  floor with margin for the public Skill (the previous floor only fit the maintained Skill, so the self-test
+  failed before reaching any guard check).
+- New regression test `scripts/test_public_sync_rules.py`: the reference filter (and every shipped reference),
+  the sync call site, the date guards and each public rewrite rule added in this release.
+- `scripts/public_sync_catalog.json` (inventory counts and one reviewed pin) and `sync-receipt.json` updated; the
+  public `src/system_health.py` is unchanged.
+
+### Not in this release
+
+- The work on VA's first-draft editing quality is still in progress and is not part of this release.
+
+### Release metadata
+
+- `release-manifest.json`: version 0.28.0; compatible window, migration ids and suite component versions move to
+  v0.28. v0.27.0 has no separate tag or release; v0.28.0 supersedes it.
+
+## v0.27.0 — 2026-11-05
+
+Documentation and install guidance only. No code, workflow contract or Skill file changed.
+
+### Editkin 0.16.0 is the Editkin to install
+
+- README, SETUP, TROUBLESHOOTING, `docs/ARCHITECTURE.md` and `docs/OPEN_SOURCE_SUITE.md` now point to
+  [Editkin 0.16.0](https://github.com/Hao0321/Editkin/releases/tag/v0.16.0) instead of the 0.15.0 public preview:
+  Windows x64, `Editkin_0.16.0_windows_x64-setup.exe` (about 1.5 GB), not code-signed, no automatic updates. It is
+  the release marked "Latest". SETUP lists its SHA-256, which is also on the release page and in `SHA256SUMS.txt`.
+- The licence is stated plainly: Editkin 0.16.0 is free, closed-source freeware. Its EULA (`EULA.txt`, attached to
+  the release and in the install folder) allows personal and commercial use, perpetually. The GPL-3.0 source in
+  the Editkin repository is frozen at 0.15.0-preview.20261029 and does not contain the 0.16.0 changes, so the
+  "build Editkin from source with `npm run mcp`" route is no longer described as current. This kit stays MIT and
+  still never bundles, vendors or updates Editkin.
+- After upgrading from 0.15.0, connect the AI once more from Editkin's **Connect AI assistant** (連接 AI 助手) so
+  the new MCP settings are written.
+
+### Token-lean MCP profile
+
+- Documented `EDITKIN_MCP_PROFILE` (SETUP 0-3, TROUBLESHOOTING, ARCHITECTURE). Editkin's one-click **Connect AI
+  assistant** writes `EDITKIN_MCP_PROFILE=va`. A hand-written Codex (`[mcp_servers.editkin.env]`) or Claude Code
+  (`"env"`) `editkin` entry should add `EDITKIN_MCP_PROFILE = "va"`.
+- Without it Editkin uses `compat`: about 54k tokens of tool definitions per turn, against about 4k with `va`
+  (approximate, from Editkin's own profile byte budgets). `va` lists the auto-edit tools with argument names only;
+  `describe_tool_input_schema` returns any tool's full schema, and a tool that is not listed still answers a call
+  by its exact name. An unknown profile name is a configuration error, not a silent fallback.
+
+### Editkin 0.16.0 tools worth knowing
+
+- `make_video` / `revise_video` (experimental, opt-in, listed in the `full` profile): one `make_video` call turns
+  workspace media and one sentence into a draft built only from certified items and returns one contact sheet and
+  a short summary (about 2 KB or less). `revise_video` applies up to three structured changes to the draft; `seal`
+  commits it and `render_project` renders it. This lane does not produce the v4 receipts `workflow_contract.py`
+  verifies: VA's default lane is still the Editkin v4 workflow (contract revision 6).
+- The aesthetic floor: render, draft `seal` and delivery approval can return `BLOCK_AESTHETIC` after mechanical
+  frame checks on the rendered file (for example text cut off or inside the 9:16 UI bands, contrast measured on
+  real pixels, text size). The VA render step does not accept `BLOCK_AESTHETIC`, so such a run does not move on to
+  visual review or outcome. Passing the floor is not READY: READY also needs a visual-review rubric receipt bound
+  to the file's SHA-256, which is a declared review, not proof of taste. TROUBLESHOOTING has a new
+  `BLOCK_AESTHETIC` section.
+
+### Release metadata
+
+- `release-manifest.json`: version 0.27.0; the compatible window, migration ids and suite component versions move
+  to v0.27. Revision 6 `workflow_contract.json`, `workflow_longform_contract.json`, `sync-receipt.json` and the
+  synced Skill are unchanged, so v0.26.0 runs in progress are not affected.
+
+## v0.26.0 — 2026-11-05
+
+### Long-form flow: one video, one Editkin project, one render
+
+- Added `python src/workflow_contract.py create-longform --session <session.json>`. It takes the same
+  flags as `create` plus `--session`, and builds the long-form session DAG from
+  `workflow_longform_contract.json` (revision 1, built on revision 6): contract → session → per-material
+  evidence → route and plugin discovery → one `edit-plan/v4` per chapter (`plan:<chapterId>`) → a local,
+  deterministic plan-set seal (`plan`) → `audit_longform_plan_set` → `apply_longform_plan_set`
+  (atomic, `reconcile_only`) → the single `render_project` → visual review → outcome. There is no
+  per-chapter render.
+- The session JSON (`hao.video-autopilot.longform-session/v1`) is exactly `{schema, chapters}`: 1–16
+  chapters, each `{chapterId, range: {startFrame, endFrame}, clipIds}` with a slug ID, ordered and
+  non-overlapping integer `[startFrame, endFrame)` ranges and bound clip IDs (a clip may appear in several
+  chapters). A session binds at most 96 materials and 32 per chapter. Invalid sessions fail with
+  `LONGFORM_SESSION_*` before a run directory is created.
+- The first contract must advertise `contract.longformPlanSet` exactly as the session contract declares it,
+  or the run stops with `LONGFORM_CAPABILITY_MISSING` / `LONGFORM_CAPABILITY_MISMATCH` before any material
+  is prepared. The session request is `{projectPath, clipLimit: 100}` and the returned workflow must list
+  the set audit and apply tools.
+- Each chapter plan is checked like a single plan (v4 schema, Skill hash, plugin candidates, router hash,
+  canonical plan hash) and additionally: `route.format` is `longform`, `materialEvidence.receipts` is
+  exactly that chapter's semantic receipts, and every beat, graphic, transition, audio accent and colour
+  exception frame stays inside the chapter range (`LONGFORM_CHAPTER_*`). Original Motion evidence, owner
+  revisions and `relink_asset_source` are refused (`LONGFORM_V1_*`).
+- The plan set `{schema, baseProject{id, revision, contentSha256}, chapters[{chapterId, range, planPath,
+  planSha256}]}` is recomputed from the chapter receipts and the unchanged base project, hashed with the
+  same canonical algorithm as plans, and rejected when a chapter file or the base project changed.
+- The set audit receipt (`hao.video-autopilot.longform-audit-receipt/v1`) must bind the sealed set, the
+  base project identity, the live invocation and every chapter's plan hash, material evidence hash and
+  range; a committed set apply must start at the sealed base revision, advance exactly one revision, bind
+  the accepted audit and carry a consistent `longformSet` block. An interrupted apply needs reconcile.
+- Revision 6 (`workflow_contract.json`) is byte-identical, so the hash Editkin seals into each plan does
+  not move; `create` runs and the Shorts flow are unchanged.
+- `python src/workflow_contract.py selftest` now also runs a synthetic two-chapter session end to end.
+  New regression tests: `scripts/test_workflow_longform_session.py`.
+- `codex-skill/video-autopilot/references/editkin-workflow-execution.md` now names where the session
+  contract lives, the `create-longform` command and the offline selftest; `docs/ARCHITECTURE.md`
+  describes the long-form run.
+
+### Packaging
+
+- New public adapters `src/workflow_longform.py`, `src/workflow_longform_runtime.py`,
+  `src/workflow_chapter_contract.py` and `src/workflow_longform_contract.json`, with repository Skill
+  forwarders, standalone Skill materialization, the Kit source-bridge allow-list, the bound
+  `WORKFLOW_EXECUTABLE_SOURCES` closure and the `AUTOPILOT_MANIFEST.json` Skill include list.
+- The public sync records the canonical long-form analogues the ports were reviewed against; a changed
+  analogue blocks the next sync until the port is reviewed again.
+- The plan-artifact and plugin-reference helpers moved to `workflow_primitives.py`, and the sealed
+  contract facts are computed by `workflow_state.contract_facts`, so the workflow import graph stays
+  acyclic.
+
+### Migration notes
+
+- **Editkin:** long-form runs need an Editkin build whose `get_autopilot_contract` advertises
+  `contract.longformPlanSet` with `audit_longform_plan_set` and `apply_longform_plan_set`.
+- **Skill:** re-sync the installed Skill after upgrading (`install_or_upgrade.py --apply --install-skill`
+  or `python src/release_manager.py install-skill`). A Skill without `workflow_longform_contract.json`
+  makes `create-longform` stop with `LONGFORM_CONTRACT_MISSING`.
+- **Runs in progress:** runs created before the upgrade stay bound to the previous workflow sources and
+  stop with "Workflow executable source changed" afterwards. Finish them before upgrading or start a new
+  run.
+- Offline tests and CI still use synthetic, unsigned fixtures; they are not real Editkin audits, applies,
+  renders or art reviews.
+
+## v0.25.0 — 2026-10-22
+
+### One architecture: VA plans and checks, Editkin renders
+
+- The public kit now has one division of labour. VA (this kit) owns material
+  evidence, the `hao.video-autopilot.edit-plan/v4` document, audit, atomic-apply
+  and render receipts, review and outcome learning, plus the script, Shorts
+  structure/caption, pacing, voice-over coverage and delivery QA gates.
+  [Editkin](https://github.com/Hao0321/Editkin) (a separate GPL-3.0 desktop
+  editor, not bundled) performs all rendering — motion graphics, templates,
+  looks/filters, tracking, roto and subject matte — and saves a project the
+  creator can keep editing. Editkin ships as a Windows
+  public preview (https://github.com/Hao0321/Editkin/releases/tag/v0.15.0-preview.20261022).
+- `src/workflow_contract.py` with `workflow_contract.json` (Editkin v4) remains
+  the only execution contract.
+- Added `docs/ARCHITECTURE.md`, a one-page VA ↔ Editkin overview. README, SETUP,
+  TROUBLESHOOTING, the knowledge index and the suite map now describe only the
+  current architecture; announcements and module tables for retired machinery
+  were removed.
+- Setup now starts with installing Editkin: README, SETUP, TROUBLESHOOTING and the architecture page guide new users to install the Editkin public preview (Windows, https://github.com/Hao0321/Editkin/releases/tag/v0.15.0-preview.20261022), connect their AI, then install this kit.
+
+### Rhythm scenes and editorial motion
+
+- Added `src/rhythm_templates.py`, a frame-exact rhythm-scene planner and
+  checker (standard library only). `plan` turns a story JSON plus Editkin's
+  current Motion Library catalog into a scene plan; `check` re-verifies a plan
+  against the catalog. It selects only implemented, certified items, covers
+  every frame without gaps or overlaps, enforces reading time and a 2–5 s scene
+  budget (8–12 scenes for a 30 s video unless an explicit `sceneCountOverride`
+  is given; documented proof/presenter holds are the only longer exception),
+  and binds the catalog digest so a changed catalog or engine requires
+  re-planning. It never renders or mutates an Editkin project. Reference:
+  `codex-skill/video-autopilot/references/rhythm-scene-templates.md`.
+- Added `codex-skill/video-autopilot/references/editorial-hybrid-motion.md`:
+  planning guidance for editorial 2D/3D poster-style motion — per-scene jobs,
+  palette/typography hierarchy, tracking and occlusion tiers, and the actual
+  Editkin operating path. It is planning data only, not a registered module or
+  an art certification.
+- The public native graphic direction accepts the `kinetic` cadence (Editkin's
+  authoring default), so vertical Shorts sent from Editkin are no longer rejected.
+- The context router now routes 2D/3D hybrid and motion-poster requests to that
+  reference.
+- Documented the Editkin Motion Library boundary: 160 original effects (80 text
+  animations, 40 transitions, 40 backgrounds) reached only through the Editkin
+  modules `graphic.text_motion`, `transition.motion_pair` and
+  `background.motion_loop`. They need an Editkin build that includes the Motion
+  Library; the Editkin public preview includes it
+  (https://github.com/Hao0321/Editkin/releases/tag/v0.15.0-preview.20261022). A missing module records
+  `NEW_MOTION_RUNTIME_REQUIRED` instead of silently falling back.
+
+### Security
+
+- Privacy: replaced the remaining real-world example fixtures and references in
+  shipped code with synthetic ones that keep every gate test's meaning. Two new
+  global privacy rules block dated creator quotes and street addresses.
+
+- Review server: an authorised review save is re-checked at commit time. A
+  session that expires or is revoked while the request body is being read can
+  no longer write `review.json`.
+
+### Retired
+
+Editkin replaces all of the following. They no longer ship with the public kit:
+
+- The pure-FFmpeg vlog/Shorts renderer `src/silent_vlog_maker/`.
+- The render half of `src/longform_maker/`: `fx_lib`, `screen_clean`,
+  `brand_templates`, `grade_*`, `video_handlers`, `transitions`, `asset_forge`,
+  `proof_stage`, `thumb_template` and similar modules.
+- The retired Shorts direct pipeline: `shorts_autopilot.py`, `shorts_delivery*`,
+  `shorts_planning`, `shorts_scan`.
+- The Python composition, filter, 3D, template-compiler, tracked-graphics, roto
+  and keyer runtimes, and the legacy visual director.
+- The bundled Cleanup tool (`tools/code-cleanup-helper`) and its provenance
+  document; Cleanup lives in its own repository,
+  https://github.com/Hao0321/claude-skill-code-cleanup.
+- The v6 architecture document.
+- Examples `01_vertical_short.py` and `03_premium_fx.py`.
+- Some legacy Skill references tied to the retired runtimes.
+
+Kept: the `longform_maker` QA gates (`gate_core`, `plan_gate`, `pace_gate`,
+`script_gate*`, `shorts_gate*`, `editkin_voiceover_gate`, `music_engine`),
+`word_captions` with caption grouping and timeline for caption-quality
+scanning, delivery QA, the publish hub, the review server, outcome learning,
+interview planning, teardown, and examples 02, 04 and 05.
+
+### Migration notes
+
+- **Publish hub:** the demo remix sync output key is now `demo_remix`.
+- **Need the old FFmpeg pipelines?** Stay on tag `v0.24.1`. This release does
+  not provide a compatibility shim for the retired modules.
+- **Upgrading** with `python install_or_upgrade.py --install-root <folder>
+  --check` and then `--apply --install-skill` replaces the managed core. Managed
+  files that v0.25.0 no longer ships are backed up under
+  `.video-autopilot/backups/<transaction>/` and then removed;
+  `python src/release_manager.py rollback` restores the previous state. Your
+  profiles, config, media, outcomes and unknown custom files are untouched; a
+  locally edited managed file is backed up and replaced only on an explicit
+  `--apply` (automatic mode stops at `CONFIRM_REQUIRED`).
+- **Updates are now manual.** The 24-hour automatic update check ran from the
+  retired Shorts entry point. Run `install_or_upgrade.py --check`, or
+  `python src/release_manager.py auto` (checks at most once per 24 hours and
+  applies compatible releases only).
+- **Shorts and vlogs:** instead of `shorts_autopilot.py scan/build`, create an
+  Editkin v4 run (`python src/workflow_contract.py create --project ...
+  --material CLIP_ID=SOURCE_FILE`) and keep checking the Shorts spec with
+  `shorts_gate.gate_shorts(spec)`.
+- **Effects, grading, transitions, templates, screen-recording cleanup,
+  tracking and roto:** do them in Editkin through its modules, templates and
+  looks. Full-frame privacy checks still run in `final_delivery_qa` and still
+  require a human to look at every sheet.
+- **Code cleanup checks:** install
+  https://github.com/Hao0321/claude-skill-code-cleanup separately if you used
+  the bundled helper.
+- **Example 06 removed:** `examples/06_teardown.py` was already broken in v0.24.1 (it imported
+  statistics helpers that `src/teardown.py` never had), so it is deleted. To measure a
+  competitor's video, run `python src/teardown.py <video-or-folder>` directly.
+- Offline tests and CI still use synthetic fixtures; they are not real Editkin
+  renders, human approval or third-party account permissions. Signed updates
+  and independent security assurance are not claimed.
+
 ## v0.24.0 (2026-10-16)
 
 - Split planning, rendering, matte collection, publishing state, source privacy

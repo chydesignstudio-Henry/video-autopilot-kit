@@ -13,15 +13,8 @@
 同一支影片改字幕、BGM 或字卡時，不應因為一次小修改就新增一支完整 1080p／4K 影片。
 `v2／v3／FINAL／old／backup` 是人工命名，不是版本控制，也不是備份策略。
 
-本專案 2026-08-08 基準盤點：
-
-| 範圍 | 檔案 | 容量 |
-|---|---:|---:|
-| `videos/` | 6,796 | 13.624 GB |
-| `_archive/` | 672 | 4.856 GB |
-| `_planning/` | 4,080 | 4.766 GB |
-| `_INBOX/` | 2,011 | 3.693 GB |
-| ≥20 MB 的 SHA-256 完全重複 | 26 組 | 0.871 GB 可少佔 |
+導入前先用下方 CLI 在自己的工作區做唯讀盤點，記錄各資料夾的檔案數、容量與
+≥20 MB 完全重複檔的組數，作為之後比較的基準。PUBLIC_FIXTURE 不附維護者工作區的盤點數字。
 
 ## 固定結構
 
@@ -127,7 +120,7 @@ if qa["all_green"]:
    一份 byte-identical 保留本。
 3. 套用時不刪路徑：用保留本建立暫存 hard link，重新驗證 SHA-256，再以
    `os.replace` 原子替換封存副本。
-4. `_INBOX`、`_planning`、`_PUBLISH_HUB`、`_待發布Shorts`、`current.mp4` 與交付檔永遠不是
+4. `_INBOX`、`_planning`、`_PUBLISH_HUB`、`_ready-shorts`、`current.mp4` 與交付檔永遠不是
    自動去重 target；只處理封存副本。
 5. 同一 hard-link inode 不再計入「可回收容量」。稽核同時回報 logical bytes、
    physical bytes、hardlink saved bytes，避免重複計算。
@@ -136,8 +129,8 @@ if qa["all_green"]:
 
 ```powershell
 # 先看精確 target / keeper / SHA-256
-python scripts/hao_autopilot.py dedupe-archive videos
+python src/storage_lifecycle.py dedupe-archive videos
 
 # 只對通過上述六條規則的候選套用
-python scripts/hao_autopilot.py dedupe-archive videos --apply
+python src/storage_lifecycle.py dedupe-archive videos --apply
 ```

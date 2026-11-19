@@ -1,8 +1,33 @@
 # TROUBLESHOOTING
 
+## Editkin 裝不起來、AI 連不上，或找不到 Kit
+
+安裝順序是：先裝 Editkin → 接上 AI → 再裝這個 Kit（完整步驟見 [SETUP.md 步驟 0](SETUP.md#步驟-0先裝-editkin)）。
+
+- **SmartScreen 擋住安裝檔**：Editkin 0.16.0 沒有數位簽章，會出現「Windows 已保護您的電腦」。先用
+  `certutil -hashfile <安裝檔>.exe SHA256` 對照 release 頁面（或 `SHA256SUMS.txt`）上的 SHA-256，一樣才點「其他資訊」→「仍要執行」。
+- **`/mcp` 看不到 `editkin`**：回 Editkin 首頁「AI 協助剪輯」→「連接 AI 助手」再做一次一鍵設定；看到「已設定最新版 MCP」後，
+  一定要**重新開啟** Claude Code／Codex（或開新的 session）。一鍵設定沒成功時，照視窗上的步驟在終端機貼上
+  Editkin 已複製好的設定指令。從 0.15.0 升級上來的人，升級後也要再按一次「連接」。
+- **AI 每回合都很吃 token、Editkin 的工具清單很長**：檢查 `editkin` 的 MCP 設定裡有沒有 `EDITKIN_MCP_PROFILE=va`。
+  一鍵設定會寫；手寫的 Codex／Claude Code 設定要自己在 env 加上 `EDITKIN_MCP_PROFILE = "va"`
+  （見 [SETUP.md 0-3](SETUP.md#0-3-接上你的-ai)）。沒有這個值時 Editkin 用 `compat`，每回合約 5.4 萬 token 的工具定義；
+  `va` 約 4 千（約略值）。改完要重新開啟 Claude Code／Codex。
+- **加了 `EDITKIN_MCP_PROFILE` 之後 Editkin 連不上**：值必須是 Editkin 認得的 profile 名稱（例如 `va`、`compat`、`full`），
+  打錯字會被當成設定錯誤。
+- **Editkin 說找不到 Video Autopilot Kit**：Skill 要在 `%USERPROFILE%\.codex\skills\video-autopilot\`，或用環境變數
+  `EDITKIN_VIDEO_AUTOPILOT_SKILL` 指到 Skill 的 `SKILL.md`。重跑
+  `python install_or_upgrade.py --install-root <Kit 資料夾> --apply --install-skill`；改了環境變數就重新開啟 Editkin 再試。
+- **安裝 Skill 時出現 `ADOPT_REQUIRED`**：那個資料夾裡已經有一份不是安裝程式管理的 Skill，所以它停下來沒有覆蓋。
+  確認可以接管後，加 `--adopt-skill` 重跑。
+- **只想確認 Editkin 本身正常**：用不需要 AI 帳號的簡單模式剪一支有人講話的橫式影片；或請 AI「列出 Editkin 的模組」
+  （`list_editkin_modules`），拿得到清單就代表 AI 和 Editkin 接好了。
+
+---
+
 ## Editkin run 卡住、畫面對不上旁白
 
-Editkin 是本 kit 唯一現行剪輯執行合約。不要跳過素材理解，也不要用檔名、舊成片或
+Editkin 是本 kit 唯一現行剪輯執行合約：VA 規劃與檢查，Editkin 渲染（見 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)）。不要跳過素材理解，也不要用檔名、舊成片或
 generic stock 猜內容。每份來源素材都必須依序完成：
 
 `prepare_ai_material` → `view_material_keyframes` → `get_material_context` →
@@ -16,9 +41,9 @@ generic stock 猜內容。每份來源素材都必須依序完成：
 3. `edit-plan/v4` 是否綁齊全部 material／semantic receipts；缺一份就不應進 audit。
 
 ```bash
-python scripts/hao_autopilot.py workflow status <run>
-python scripts/hao_autopilot.py workflow next <run>
-python scripts/hao_autopilot.py workflow verify <run>
+python src/workflow_contract.py status <run>
+python src/workflow_contract.py next <run>
+python src/workflow_contract.py verify <run>
 ```
 
 run 預設只放在專案內 `videos/_AUTOPILOT/editkin-v4/`。不要在磁碟根目錄另建工作資料夾。
@@ -47,10 +72,10 @@ run 預設只放在專案內 `videos/_AUTOPILOT/editkin-v4/`。不要在磁碟�
 
 ```bash
 # 已確認沒有提交
-python scripts/hao_autopilot.py workflow resume <run> --apply-resolution not-applied
+python src/workflow_contract.py resume <run> --apply-resolution not-applied
 
 # 已找到 committed receipt
-python scripts/hao_autopilot.py workflow resume <run> \
+python src/workflow_contract.py resume <run> \
   --apply-resolution committed --receipt <receipt.json>
 ```
 
@@ -106,6 +131,86 @@ BLOCKED，避免只傳一支 MP4 得到假綠。
 | M108 / M79 | 斷句品質、BGM 全片覆蓋 |
 
 QA 全綠仍不等於人工審片完成。機器不得替真人標記 certified。
+
+---
+
+## 升級到 v0.25.0 後找不到舊模組或舊指令
+
+v0.25.0 把所有 Python／FFmpeg 渲染路徑退役，交給 Editkin。若看到 `ModuleNotFoundError`、
+找不到檔案或舊指令失效，多半是下列其中一種：
+
+| 你以前用的 | 現在 |
+|---|---|
+| `shorts_autopilot.py scan／build`、`silent_vlog_maker` 直出 Shorts／vlog | 建一個 Editkin v4 run：`python src/workflow_contract.py create --project ... --material ...`；Shorts 結構與字幕仍由 `shorts_gate` 檢查 |
+| `longform_maker` 的特效、螢幕錄影清理、品牌卡、調色、轉場、縮圖模板 | 在 Editkin 裡用模組、模板與 Looks 完成；螢幕錄影的裁切／遮罩也在 Editkin 做，交付前用 `final_delivery_qa` 的全幀掃描圖人工逐張檢查 |
+| `filter_runtime.py`、composition／3D／tracked graphics／roto／keyer runtime | Editkin 的 Looks／濾鏡、動態圖形、追蹤、roto 與主體遮罩 |
+| `tools/code-cleanup-helper` | 獨立 repo：[claude-skill-code-cleanup](https://github.com/Hao0321/claude-skill-code-cleanup) |
+| 範例 `01_vertical_short.py`、`03_premium_fx.py` | 已移除；範例 02／04／05／06 仍在 |
+
+升級時，更新器會先把不再出貨的官方管理檔備份到 `.video-autopilot/backups/<transaction>/` 再移除；
+你自己加的檔案不會被刪。需要整套舊 FFmpeg pipeline 時，請留在 tag `v0.24.1`，或用
+`python src/release_manager.py rollback` 回到升級前。
+
+另外，v0.24.x 的自動更新檢查掛在已退役的 Shorts 入口上；v0.25.0 起更新改為手動
+（`python install_or_upgrade.py --install-root <資料夾> --check`，或 `python src/release_manager.py auto`）。
+
+---
+
+## Motion Library 效果不出現：`NEW_MOTION_RUNTIME_REQUIRED`
+
+VA 只透過 Editkin 模組 `graphic.text_motion`、`transition.motion_pair`、`background.motion_loop`
+使用 Motion Library。當次能力發現（`list_editkin_modules`）找不到這些模組時，VA 會記錄
+`NEW_MOTION_RUNTIME_REQUIRED` 並停下，不會默默改用舊字卡或舊效果。處理方式：
+
+1. 確認安裝的 Editkin 版本內含 Motion Library（[Editkin 0.16.0](https://github.com/Hao0321/Editkin/releases/tag/v0.16.0)
+   已內含；其他版本見 [Editkin releases](https://github.com/Hao0321/Editkin/releases)）。
+2. 換版本後重新做能力發現；catalog 的 revision 或 engine 變了，舊的節奏計畫要重排、重驗。
+
+---
+
+## 輸出被擋下：`BLOCK_AESTHETIC`
+
+Editkin 0.16.0 起有「美感底線」：對輸出的檔案做機械式的畫面檢查，例如字被切到或落在 9:16 介面遮擋區、
+用實際像素量到的對比不足、字太小。v4 run 套用過的專案在 `render_project`、草稿的 `seal`、交付包的核准，
+都可能回 `BLOCK_AESTHETIC`，報告會附上被擋的畫面和修正建議。
+
+- `BLOCK_AESTHETIC` 不是 GREEN。VA 的 render 步驟不接受這個狀態，所以這個 run 不會往審片與成效學習走；
+  輸出檔留在磁碟上，當成沒過關的候選。
+- 照報告修正後再輸出一次；`python src/workflow_contract.py status <run>`／`next <run>` 會告訴你 run 現在停在哪一步。
+- 通過底線還不等於 READY：Editkin 還要一份綁定該檔 SHA-256 的**視覺審片評分收據**（構圖、字體排印、配色、動態、
+  宣稱等各項都要達標）。這份收據是審片者自己聲明的，Editkin 只檢查它完整、綁對檔案；它不代表機器替你審過美感。
+
+---
+
+## `rhythm_templates.py` 擋下計畫
+
+`src/rhythm_templates.py` 只做規劃與檢查，錯誤碼直接說明原因，常見的有：
+
+| 錯誤碼 | 意思 | 修法 |
+|---|---|---|
+| `NO_CERTIFIED_ITEM_FOR_ROLE` | catalog 裡沒有符合該角色、已實作且已認證的文字項目 | 換角色或指定已認證的 `itemId`；不要拿未認證項目硬上 |
+| `THIRTY_SECOND_SCENE_COUNT_8_TO_12` | 30 秒片的場景數不在 8–12 | 補或刪有內容的場景；若是明確要求的景數，用 `sceneCountOverride: {count, reason}` |
+| `INSUFFICIENT_CONTENT_OR_TIME` / `TEXT_OVERLOAD` | 總長、每景 2–5 秒與閱讀時間湊不起來 | 調整文字量或總長，不要把圖形硬撐長 |
+| `GAP_OR_OVERLAP` / `INCOMPLETE_COVERAGE` | 場景沒有逐幀接滿 | 重新 `plan`，不要手改 frame 數 |
+| `STALE_CATALOG` | 計畫綁的是舊 catalog 或舊 engine | 用當下的 catalog 重新 `plan` 再 `check` |
+
+細節 → [`rhythm-scene-templates.md`](codex-skill/video-autopilot/references/rhythm-scene-templates.md)。
+
+---
+
+## 長片 `create-longform` 被擋下
+
+`python src/workflow_contract.py create-longform --session <session.json>` 的錯誤碼直接說明原因，常見的有：
+
+| 錯誤碼 | 意思 | 修法 |
+|---|---|---|
+| `LONGFORM_CONTRACT_MISSING` | 綁定的 Skill 旁邊沒有 `workflow_longform_contract.json`（Skill 比這個 Kit 舊） | 同步 Skill：`install_or_upgrade.py --apply --install-skill` 或 `python src/release_manager.py install-skill`，再開新 run |
+| `LONGFORM_SESSION_*` | session JSON 不合格：章數不在 1–16、chapterId 不是 slug、影格範圍不是依序不重疊的整數、clipIds 不是已綁定素材 | 修正 session JSON 後重跑 `create-longform`；被拒絕時不會建立 run 資料夾 |
+| `LONGFORM_CAPABILITY_MISSING` / `_MISMATCH` | 接上的 Editkin 沒有宣告（或宣告不同的）`contract.longformPlanSet` | 換成支援長片 set（`audit_longform_plan_set`／`apply_longform_plan_set`）的 Editkin，開新 run |
+| `LONGFORM_CHAPTER_*` / `LONGFORM_V1_*` | 章節 plan 帶了別章的素材收據、`route.format` 不是 `longform`、影格超出章節範圍，或用了 v1 拒絕的原創 Motion／owner revision／`relink_asset_source` | 只改那一章的 plan，重新 complete 該章；不要改已封存的檔案 |
+| `LONGFORM_CHAPTER_CHANGED` / `LONGFORM_PLAN_SET_*` | 章節 plan 或 base 專案在封存後被改過 | 還原檔案；需要改內容就開新 run |
+
+細節 → [`editkin-workflow-execution.md`](codex-skill/video-autopilot/references/editkin-workflow-execution.md)。
 
 ---
 

@@ -12,6 +12,7 @@ import ast
 import hashlib
 import json
 import os
+import re
 import stat
 import tempfile
 from pathlib import Path, PurePosixPath
@@ -26,7 +27,6 @@ from public_privacy_sanitizer import (
 )
 from public_skill_skeleton import render_public_skill
 from public_sync_inventory import (
-    CLEANUP_HELPER_FILES,
     DRAMA_MODULES,
     KNOWLEDGE_FILES,
     LONGFORM_MODULES,
@@ -39,23 +39,21 @@ from public_sync_inventory import (
     SILENT_VLOG_MODULES,
     SYNC_RECEIPT_PATH,
     WORKFLOW_SKILL_FILES,
-    canonical_receipt_shape_errors,
     public_destination_required_paths,
     self_test_public_inventory,
     sync_expected_output_paths,
+    private_names,
     validate_canonical_inventory,
     validate_public_destination,
 )
 from public_sync_renderers import (
     render_public_broll,
-    render_public_editorial_templates,
     self_test_public_renderers,
 )
 from public_sync_support import (
     PUBLIC_KNOWLEDGE_SANITIZERS,
     _assert_public_knowledge_safe,
     _copy_public_autopilot_config,
-    _copy_public_cleanup_config,
     _copy_public_knowledge_json,
     _copy_public_knowledge_state,
     _genericize_creator_labels,
@@ -71,19 +69,53 @@ from public_sync_support import (
     _unexpected_private_public_files,
     _write_public_manifest,
 )
-from public_sync_transforms import MODULE_REPLACEMENTS, PRIVACY_PATTERNS, REPLACEMENTS
+from public_sync_transforms import (
+    MODULE_REPLACEMENTS,
+    PRIVACY_PATTERNS,
+    PUBLIC_SHOT_SELECTION_TEXT,
+    REPLACEMENTS,
+)
+from public_reference_filter import drop_unshipped_reference_paragraphs, imported_names, leftover_pointers
+from public_privacy_legacy import set_private_terms
 from public_sync_paths import _path_entry_metadata, _is_link_or_reparse, _is_contained_path, _resolve_entry, _safe_relative_output_path, _output_path_boundary_rule, _output_path_boundary_violations, _boundary_error, _assert_sync_output_boundaries, _write_utf8, _text_sha256, OUTPUT_HASH_SEMANTICS
 from public_sync_receipts import _write_sync_receipt, _receipt_schema_errors, _verify_sync_receipt
-from public_cleanup_bundle import (
-    BUNDLE_PATH, copy_cleanup_source, validate_cleanup_source,
-    verify_cleanup_bundle, write_cleanup_bundle,
-)
 
 
 # No complete canonical-to-public workflow transform is registered. These
 # adapters implement a media-only public controller and must not be overwritten
 # by the private original-source controller, including in an empty staging tree.
-PUBLIC_WORKFLOW_ADAPTERS = ('engine_continuity.py', 'workflow_contract.py', 'workflow_state.py', 'workflow_receipts.py', 'workflow_material_receipts.py', 'workflow_transport.py', 'workflow_audit_binding.py', 'workflow_context_chain.py', 'workflow_render_retry.py', 'workflow_binding_fixture.py', 'workflow_primitives.py', 'workflow_contract_source.py', 'workflow_receipt_store.py', 'public_workflow_sources.py', 'workflow_contract.json')
+PUBLIC_WORKFLOW_ADAPTERS = ('engine_continuity.py', 'workflow_contract.py', 'workflow_state.py', 'workflow_receipts.py', 'workflow_material_receipts.py', 'workflow_transport.py', 'workflow_audit_binding.py', 'workflow_context_chain.py', 'workflow_render_retry.py', 'workflow_binding_fixture.py', 'workflow_primitives.py', 'workflow_contract_source.py', 'workflow_receipt_store.py', 'public_workflow_sources.py', 'workflow_contract.json', 'workflow_chapter_contract.py', 'workflow_longform_runtime.py', 'workflow_longform.py', 'workflow_longform_contract.json')
+
+
+PUBLIC_REFERENCE_PREFIX = "codex-skill/video-autopilot/references/"
+# Modules whose maintainer change dates are rewritten away; a surviving date
+# (for example in a new comment shape) stops the sync instead of shipping.
+DATE_NOTE_FREE_MODULES = frozenset((
+    "project_kernel.py", "project_kernel_commands.py", "project_paths.py", "skill_sync.py",
+))
+_MAINTAINER_DATE_NOTE = re.compile(r"\((?:19|20)\d{2}-\d{2}-\d{2}\)|since (?:19|20)\d{2}-\d{2}-\d{2}")
+
+
+def _shipped_reference_names() -> frozenset[str]:
+    """Reference file names the public Skill ships (synced and public-kit-owned)."""
+    names = {Path(name).name for name in REFERENCE_FILES}
+    names.update(Path(name).name for name in PUBLIC_OWNED_PATHS
+                 if name.startswith(PUBLIC_REFERENCE_PREFIX))
+    return frozenset(names)
+
+
+def _shipped_module_names(distribution_source: Path) -> frozenset[str]:
+    """Every Python module name the public kit ships: synced, kit-owned, kit scripts and examples."""
+    names = {Path(name).name for group in (ROOT_MODULES, LONGFORM_MODULES, SILENT_VLOG_MODULES,
+                                           DRAMA_MODULES, WORKFLOW_SKILL_FILES, PUBLIC_OWNED_PATHS)
+             for name in group if name.endswith(".py")}
+    for pattern in ("*.py", "scripts/*.py", "examples/*.py"):
+        names.update(path.name for path in distribution_source.glob(pattern))
+    # Creator-owned files the kit documents and protects (for example a local config.py).
+    manifest = json.loads((distribution_source / "release-manifest.json").read_text(encoding="utf-8-sig"))
+    names.update(Path(pattern).name for pattern in manifest.get("protected_globs", [])
+                 if pattern.endswith(".py") and not any(char in Path(pattern).name for char in "*?["))
+    return frozenset(names)
 
 
 def _workflow_adapter_text(path: Path) -> str:
@@ -118,8 +150,15 @@ def _transform(text: str, name: str = "") -> str:
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     for pattern, replacement in REPLACEMENTS:
         text = pattern.sub(replacement, text)
-    for pattern, replacement in MODULE_REPLACEMENTS.get(name, ()):
-        text = pattern.sub(replacement, text)
+    for number, rule in enumerate(MODULE_REPLACEMENTS.get(name, ())):
+        text, count = rule[0].subn(rule[1], text)
+        if len(rule) > 2 and rule[2] and not count:
+            # A required rewrite that no longer matches would let its wording or count through.
+            raise ValueError(f"required public rewrite {number} no longer matches in {name}")
+    if name in DATE_NOTE_FREE_MODULES and _MAINTAINER_DATE_NOTE.search(text):
+        raise ValueError("maintainer change date survived public transforms in " + name)
+    if name == "shot-selection-language.md" and text != PUBLIC_SHOT_SELECTION_TEXT:
+        raise ValueError("public shot-selection reference must be the fixed public text")
     if name == "project_paths.py":
         required = (
             'MANIFEST_NAME = MANIFEST_NAMES[0]', '"release-manifest.json"',
@@ -135,10 +174,8 @@ def _transform(text: str, name: str = "") -> str:
         "str(HERE.parent)" not in text or "cwd=HERE.parent" not in text
     ):
         raise ValueError("architecture gate public transform lost repository-root scope")
-    if name == "delivery.py" and "from .. import publish_hub" not in text:
-        raise ValueError(
-            "long-form delivery public transform lost package-relative control-plane edge"
-        )
+    if name == "publish_hub_context.py" and '"_planning" / "' in text:
+        raise ValueError("publish hub public transform left a non-default folder")
     if name == "publish_hub_cli.py":
         required = (
             'withdraw.add_argument("--actor", default="creator")',
@@ -149,7 +186,22 @@ def _transform(text: str, name: str = "") -> str:
     return text
 
 
-def _copy_text(source: Path, destination: Path, relative_path: str | None = None) -> None:
+# Optional code paths that already reach a module the kit does not ship; any other such import stops the sync.
+_KNOWN_PRIVATE_IMPORTS = frozenset({("context_router.py", "longform_planning_contract")})
+
+
+def _assert_no_private_imports(name: str, text: str, private: frozenset[str]) -> None:
+    """A public module must not import a module that stays in the maintained source."""
+    if not name.endswith(".py"):
+        return
+    missing = sorted(module for module in imported_names(ast.parse(text))
+                     if module + ".py" in private and (name, module) not in _KNOWN_PRIVATE_IMPORTS)
+    if missing:
+        raise ValueError(f"public {name} imports modules the kit does not ship: {missing}")
+
+
+def _copy_text(source: Path, destination: Path, relative_path: str | None = None,
+               private: frozenset[str] = frozenset(), modules: frozenset[str] | None = None) -> None:
     if not source.is_file():
         raise FileNotFoundError(source)
     original = source.read_text(encoding="utf-8-sig")
@@ -161,10 +213,21 @@ def _copy_text(source: Path, destination: Path, relative_path: str | None = None
     text = _transform(original, source.name)
     if relative_path is not None:
         text = sanitize_public_text(relative_path, text)
+        if relative_path.startswith(PUBLIC_REFERENCE_PREFIX):
+            shipped = _shipped_reference_names()
+            text = drop_unshipped_reference_paragraphs(text, shipped, private, modules)
+            leftover = leftover_pointers(text, shipped, private, modules)
+            if leftover:
+                raise ValueError(f"reference filter left {len(leftover)} pointer(s) in {relative_path}")
         assert_public_text_safe(relative_path, text)
     hits = [pattern.pattern for pattern in PRIVACY_PATTERNS if pattern.search(text)]
     if hits:
         raise ValueError(f"privacy token in {source}: {hits}")
+    _assert_no_private_imports(source.name, text, private)
+    if "scripts/hao_autopilot.py" in text:
+        # The maintainer wrapper is not distributed; map each citation to a
+        # public entry point in MODULE_REPLACEMENTS instead of publishing it.
+        raise ValueError(f"private wrapper command survived public transforms in {source.name}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     _write_utf8(destination, text)
 
@@ -178,13 +241,14 @@ def _copy_public_skill(source: Path, destination: Path) -> None:
     _write_utf8(destination, text)
 
 
-def _copy_rendered_source(source: Path, destination: Path, renderer) -> None:
+def _copy_rendered_source(source: Path, destination: Path, renderer, private: frozenset[str] = frozenset()) -> None:
     if not source.is_file():
         raise FileNotFoundError(source)
     original = source.read_text(encoding="utf-8-sig")
     if PUBLIC_FIXTURE in original:
         raise ValueError(f"reserved public privacy marker in canonical source: {source}")
     text = renderer(original)
+    _assert_no_private_imports(source.name, text, private)
     relative = destination.as_posix()
     hits = [pattern.pattern for pattern in PRIVACY_PATTERNS if pattern.search(text)]
     if hits:
@@ -343,7 +407,7 @@ def _self_test_receipt_schema(repository: Path) -> None:
     return implementation(globals(), repository)
 
 
-def _copy_canonical_groups(canonical, copied, repository):
+def _copy_canonical_groups(canonical, copied, repository, private=frozenset(), modules=None):
     groups = (
         (ROOT_MODULES, canonical, repository / "src"),
         (LONGFORM_MODULES, canonical / "longform_maker", repository / "src" / "longform_maker"),
@@ -356,19 +420,63 @@ def _copy_canonical_groups(canonical, copied, repository):
         for name in names:
             destination = destination_root / name
             if name == "broll_qa.py" and source_root == canonical:
-                _copy_rendered_source(source_root / name, destination, render_public_broll)
-            elif name == "editorial_templates.py" and source_root == canonical:
-                _copy_rendered_source(
-                    source_root / name, destination, render_public_editorial_templates
-                )
+                _copy_rendered_source(source_root / name, destination, render_public_broll, private)
             elif name == "state.json" and source_root.name == "knowledge":
                 _copy_public_knowledge_state(source_root / name, destination)
             elif name in SANITIZED_KNOWLEDGE_FILES and source_root.name == "knowledge":
                 _copy_public_knowledge_json(source_root / name, destination)
             else:
                 relative = destination.relative_to(repository).as_posix()
-                _copy_text(source_root / name, destination, relative)
+                _copy_text(source_root / name, destination, relative, private, modules)
             copied.append(destination.relative_to(repository).as_posix())
+
+
+def _remove_private_outputs(repository: Path, outputs, patterns) -> list[str]:
+    """Remove the generated outputs that match a private pattern; return their paths."""
+    paths = sorted(set(outputs))
+    unsafe = _output_path_boundary_violations(repository, paths)
+    hits = []
+    for relative in paths:
+        target = repository / relative
+        if relative in unsafe or not target.is_file():
+            continue
+        text = target.read_text(encoding="utf-8-sig", errors="replace")
+        if any(pattern.search(text) for pattern in patterns):
+            target.unlink()
+            hits.append(relative)
+    return hits
+
+
+_KIT_TEXT_SKIP = frozenset((".git", "__pycache__", "dist", "node_modules"))
+
+
+def _assert_kit_files_free_of_private_text(repository: Path, patterns) -> None:
+    """Hand-written kit files (docs, scripts, manifests) must not match a private pattern either."""
+    hits = []
+    for path in sorted(repository.rglob("*")):
+        relative = path.relative_to(repository)
+        if any(part in _KIT_TEXT_SKIP for part in relative.parts) or not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+        except (UnicodeDecodeError, OSError):
+            continue
+        if any(pattern.search(text) for pattern in patterns):
+            hits.append(relative.as_posix())
+    if hits:
+        raise ValueError("private control text pattern matched kit files: " + ", ".join(hits[:20]))
+
+
+def _assert_no_private_text(repository: Path, copied: list[str], patterns) -> None:
+    """Fail when a private control pattern matches a generated public output.
+
+    The matching outputs are removed before the error is raised, so a failed sync
+    leaves no such text in the working tree to be committed by mistake.
+    """
+    hits = _remove_private_outputs(repository, copied, patterns)
+    if hits:
+        raise ValueError("private control text pattern matched public outputs (removed): "
+                         + ", ".join(hits[:20]))
 
 
 def sync(
@@ -382,15 +490,29 @@ def sync(
         else Path(__file__).resolve().parents[1]
     )
     _assert_public_workflow_derivation(canonical, distribution_source)
-    canonical_evidence = validate_canonical_inventory(canonical)
-    cleanup = Path.home() / ".codex" / "skills" / "code-cleanup-helper"
-    cleanup_sources = validate_cleanup_source(cleanup)
+    control = validate_canonical_inventory(canonical)
     # This must precede cleanup, mkdir, and every copy.  A malicious junction
     # must not turn even a nominally local cleanup/write into an external one.
     _assert_sync_output_boundaries(repository)
+    set_private_terms(control["terms"])
+    try:
+        return _sync_with_control(canonical, repository, distribution_source, control)
+    except BaseException:
+        # Whatever stopped the sync, outputs already written must not keep private text.
+        _remove_private_outputs(repository, sync_expected_output_paths(), control["patterns"])
+        raise
+    finally:
+        set_private_terms(())
+
+
+def _sync_with_control(canonical: Path, repository: Path, distribution_source: Path, control: dict) -> list[str]:
     _remove_private_public_files(repository)
     copied: list[str] = []
-    _copy_canonical_groups(canonical, copied, repository)
+    modules = _shipped_module_names(distribution_source)
+    # A private canonical file that the kit also ships under the same name (a public
+    # port or a kit-owned file) is not a private pointer.
+    private = private_names(control) - _shipped_reference_names() - modules
+    _copy_canonical_groups(canonical, copied, repository, private, modules)
     _copy_public_skill(
         canonical / "SKILL.md",
         repository / "codex-skill" / "video-autopilot" / "SKILL.md",
@@ -402,6 +524,8 @@ def sync(
             canonical / name,
             destination,
             destination.relative_to(repository).as_posix(),
+            private,
+            modules,
         )
         copied.append(destination.relative_to(repository).as_posix())
     _copy_text(
@@ -414,26 +538,13 @@ def sync(
         canonical / "audit.config.json", repository / "audit.config.json"
     )
     copied.append("audit.config.json")
-    for relative in CLEANUP_HELPER_FILES:
-        destination = repository / "tools" / "code-cleanup-helper" / relative
-        if relative == "audit.config.json":
-            _copy_public_cleanup_config(cleanup / relative, destination)
-        else:
-            copy_cleanup_source(cleanup, relative, destination)
-        copied.append(destination.relative_to(repository).as_posix())
-    write_cleanup_bundle(cleanup, repository, cleanup_sources)
-    copied.append(BUNDLE_PATH)
-    _copy_text(
-        distribution_source.parent / "AUTOPILOT_ARCHITECTURE_V6.md",
-        repository / "docs" / "AUTOPILOT_ARCHITECTURE_V6.md",
-        "docs/AUTOPILOT_ARCHITECTURE_V6.md",
-    )
-    copied.append("docs/AUTOPILOT_ARCHITECTURE_V6.md")
     _write_public_manifest(repository)
     copied.append("AUTOPILOT_MANIFEST.json")
     copied.extend(_copy_public_owned(distribution_source, repository))
     validate_public_destination(repository, distribution_source / "release-manifest.json")
-    _write_sync_receipt(canonical_evidence, repository, copied)
+    _assert_no_private_text(repository, copied, control["patterns"])
+    _assert_kit_files_free_of_private_text(repository, control["patterns"])
+    _write_sync_receipt(repository, copied)
     copied.append(SYNC_RECEIPT_PATH)
     return copied
 

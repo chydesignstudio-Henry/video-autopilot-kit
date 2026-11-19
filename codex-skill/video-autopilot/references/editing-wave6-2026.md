@@ -65,7 +65,7 @@ dedupe: master-techniques 的 synchresis 只焊『時間』（±1 frame）、tec
 ### W6A-4. BGM 選曲頻譜否決條件（vocal + 中頻密度）：教學旁白片 BGM 必須 instrumental（含哼唱/vocal chop 都不行），且 1-4kHz 人聲頻段織體要稀疏（鋼琴/pad/低頻 groove 優於密集電吉他/銅管/synth lead）——頻譜打架 sidechain 救不了，選曲階段直接換。
 落地(機械化): BGM 入庫 gate：ffmpeg 對候選曲跑 bandpass(1000-4000Hz) astats RMS 與全頻 RMS 比值，>0.45 = warn 要人工試聽；進階用 demucs 抽 vocal stem，stem 能量 >-40dBFS = 含人聲直接 fail。
 來源: https://www.masteringbox.com/learn/frequency-masking ; https://protunesone.com/blog/top-tips-for-balancing-voiceovers-with-background-music-in-videos/ ; https://theproducerschool.com/blogs/music-production/frequency-masking-explained-complete-guide-for-producers
-dedupe: master-techniques 選曲管 BPM×Energy×mood 三維、hao-teaching-method 管題材命名映射、fundamentals 管混音層級 dB——全是『音量/情緒』維度；『頻譜相容性當否決條件』是新維度。
+dedupe: master-techniques 選曲管 BPM×Energy×mood 三維、teaching-method profile 管題材命名映射、fundamentals 管混音層級 dB——全是『音量/情緒』維度；『頻譜相容性當否決條件』是新維度。
 
 ### W6A-5. BGM 常駐 EQ voice pocket：除 sidechain duck 外，BGM 軌常駐挖一個 2-5kHz、-3~-4dB、寬 Q 的 dip（voice pocket），讓人聲清晰度靠頻譜讓位而非只靠音量壓——duck 可從 ratio 8:1 收斂、BGM 存在感更連續不抽動。
 落地(機械化): master_mix filtergraph 檢查 music chain 含 equalizer=f≈3000:t=q:w≈2:g=-3~-4；效果驗證接既有 af_whisper transcript_diff gate：加 pocket 後錯字率不得上升。
@@ -182,7 +182,7 @@ PUBLIC_FIXTURE contains no maintainer duration band, channel baseline or prescri
 dedupe: wave5 finecut#5/dataviz#10 給的是 zoom『參數』（350-500ms/1.5x）且假設人工排点；本條是『從遙測自動生成 keyframe』的演算法，供給側全新；cursor-follow 維持 wave5 SKIP 裁定不翻案
 
 ### W6C-8. 錄製即遙測（capture-time instrumentation，2026 auto-edit 生態的共同底座）：2026 自動剪輯工具的共同架構解：剪輯智慧來自『錄製當下記錄的輸入遙測』（click/keystroke/window 事件時間戳），不是事後對像素做視覺分析——Screen Studio 系全靠 capture-time telemetry 才能準確偵測 typing 段與 zoom 目標；coding timelapse 工具（programming_timelapse）更進一步在錄製期只在有打字時抽格，輸出即已加速、零後製。原則：能在錄製期拿到的 ground truth（誰在打字/點了哪/等了多久），絕不留到後製用 motion 偵測猜。
-落地(機械化): `longform_maker/input_logger.py`：pynput 記錄 {t, type: key|click|scroll, pos} 隨 OBS 同啟同停 → events.json 與錄影檔同名存放；事件檔以 source hash 綁進 material evidence receipt，供 W6C-1 speed_map、W6C-7 zoom keyframe、W6C-3 wait classifier 產 v4 commands；QA：events.json 時長 vs 錄影時長差 >2s = audit BLOCK／重錄警告。
+落地(機械化): 新模組 input_logger：pynput 記錄 {t, type: key|click|scroll, pos} 隨 OBS 同啟同停 → events.json 與錄影檔同名存放；事件檔以 source hash 綁進 material evidence receipt，供 W6C-1 speed_map、W6C-7 zoom keyframe、W6C-3 wait classifier 產 v4 commands；QA：events.json 時長 vs 錄影時長差 >2s = audit BLOCK／重錄警告。
 來源: github.com/jason-shepherd/programming_timelapse（typing-triggered capture）+ github.com/imbhargav5/open-recorder（click telemetry 生 zoom）+ screen.studio typing auto-detect
 dedupe: wave5 tools2026#7 用 auto-editor motion 偵測＝事後猜；本條是上游架構原則（錄製期記真值），motion 偵測降級為無 log 時的 fallback——互補不衝突
 

@@ -64,10 +64,32 @@ from public_privacy_syntax import (
     _token_digest,
     _generalize_identity,
     _generalize_project_ids,
+    _append_module_docstring_note,
+    _replace_main_block,
+    _subn_once,
+)
+from public_privacy_fixtures import (
+    PUBLIC_SHORTS_SP_COMMENT,
+    PUBLIC_SHORTS_SPEC_EXAMPLE,
+    PUBLIC_SHORTS_SQ_COMMENT,
+    PUBLIC_WORD_CAPTIONS_SELFTEST,
 )
 
 
-_PRIVATE_COMMUNITY_DIGEST = "ef57dc5839f9f74b7ecc0df6017a85a69ee17edb1e4f3a245ebc3adf492ac2a1"
+# Maintainer-only terms come from the private control file at sync time; the public
+# kit stores neither the terms nor hashes of them.
+_PRIVATE_TERMS: list[str] = []
+
+
+def set_private_terms(terms) -> None:
+    """Install the private control file's terms for one sync; an empty list clears them."""
+    _PRIVATE_TERMS[:] = sorted(set(terms), key=len, reverse=True)
+
+
+def _replace_private_terms(text: str, replacement: str) -> str:
+    for term in _PRIVATE_TERMS:
+        text = text.replace(term, replacement)
+    return text
 
 
 def _contains_private_identity(text: str) -> bool:
@@ -75,21 +97,6 @@ def _contains_private_identity(text: str) -> bool:
         _token_digest(match.group(0)) in _PRIVATE_IDENTITY_DIGESTS
         for match in re.finditer(r"\b[A-Za-z][A-Za-z0-9]*\b", text)
     )
-
-
-def _replace_hashed_span(text: str, *, width: int, digest: str, replacement: str) -> str:
-    """Replace a fixed-width private token without storing its plaintext."""
-    out: list[str] = []
-    cursor = 0
-    while cursor < len(text):
-        candidate = text[cursor:cursor + width]
-        if len(candidate) == width and _token_digest(candidate) == digest:
-            out.append(replacement)
-            cursor += width
-        else:
-            out.append(text[cursor])
-            cursor += 1
-    return "".join(out)
 
 
 from public_privacy_plans import (
@@ -101,14 +108,14 @@ from public_privacy_plans import (
 )
 
 
-PUBLIC_DEMO_PLAN_FUNCTION = '''def create_miaoli_remix_plan() -> dict[str, Any]:
+PUBLIC_DEMO_PLAN_FUNCTION = '''def create_demo_remix_plan() -> dict[str, Any]:
     """Compatibility entrypoint that writes a synthetic public demo route."""
     output = VIDEOS / "_planning" / "remix" / "R001_public-demo-day-trip"
     plan = {
         "schema_version": 1, "content_id": "R001", "status": "planned",
         "format": "shorts", "target_seconds": 52,
         "title": "示範一日遊 4 站｜從晨間市集走到河畔公園",
-        "source_rule": "使用 S101-S104 的示範原始素材，不串接已上字幕成片",
+        "source_rule": "只用 S101-S104 的示範原始素材，不拼接已燒字幕的成片",
         "sources": [
             {"content_id": "S101", "stop": "晨光市場", "folder": "videos/_INBOX/demo/101", "range": "00:03-00:12"},
             {"content_id": "S102", "stop": "綠徑公園", "folder": "videos/_INBOX/demo/102", "range": "00:12-00:23"},
@@ -117,8 +124,8 @@ PUBLIC_DEMO_PLAN_FUNCTION = '''def create_miaoli_remix_plan() -> dict[str, Any]:
         ],
         "beats": [
             {"range": "00:00-00:03", "purpose": "四站 payoff 快閃", "caption": "示範一日遊・4 站"},
-            {"range": "00:03-00:47", "purpose": "依示範順序走完四站", "caption": "每站只留地名與一個體驗重點"},
-            {"range": "00:47-00:52", "purpose": "路線回顧與回圈", "caption": "這條示範路線你會先去哪站？"},
+            {"range": "00:03-00:47", "purpose": "依示範順序走完四站", "caption": "每站保留地名與一個可驗證的體驗"},
+            {"range": "00:47-00:52", "purpose": "路線回顧與回圈", "caption": "這條示範路線你最想先去哪一站？"},
         ],
         "research_topic": "demo_day_trip", "candidate_score": 80,
         "score_basis": ["synthetic fixture", "four distinct demo stops", "original-source rule exercised"],
@@ -135,89 +142,6 @@ PUBLIC_DEMO_PLAN_FUNCTION = '''def create_miaoli_remix_plan() -> dict[str, Any]:
     return plan'''
 
 
-_DATED_QUOTED_FEEDBACK_COMMENT = re.compile(
-    r"(?im)^(?P<indent>[ \t]*)#[^\r\n]*"
-    r"20\d{2}[-/.]\d{2}[-/.]\d{2}"
-    r"[^\r\n]{0,80}[\u300c\u300e\"'][^\r\n]{1,120}[\u300d\u300f\"']"
-    r"[^\r\n]{0,80}(?:\u56de\u994b|feedback)[^\r\n]*$"
-)
-
-
-def _shorts_vertical(text: str) -> str:
-    pattern = re.compile(
-        r"(?ms)^    _[A-Za-z0-9_]+_lines = _split_caption_lines\(\n"
-        r"        \[\([^\n]+\n"
-        r"    assert len\(_[A-Za-z0-9_]+_lines\) == 2 and "
-        r"_caption_units\(_[A-Za-z0-9_]+_lines\[1\]\) == 8\.0\n"
-    )
-    replacement = (
-        "    # PUBLIC_FIXTURE: synthetic caption used only for safe-area regression.\n"
-        "    _demo_route_lines = _split_caption_lines(\n"
-        "        [('示範城一天跑 4 站', 'w'), ('\\n一路散步走到河畔', 'r')], 6)\n"
-        "    assert len(_demo_route_lines) == 2 and _caption_units(_demo_route_lines[1]) == 8.0\n"
-    )
-    result, count = pattern.subn(
-        lambda _match: replacement, _generalize_identity(_lf(text)), count=1
-    )
-    if count != 1:
-        raise ValueError("public sanitizer expected one two-line caption regression fixture")
-    result = _DATED_QUOTED_FEEDBACK_COMMENT.sub(
-        lambda match: (
-            match.group("indent")
-            + "# PUBLIC_FIXTURE: caption size is a configurable starter constrained by safe-area geometry."
-        ),
-        result,
-    )
-    result = re.sub(
-        r"(?m)^[ \t]*#[^\r\n]*20\d{2}[-/.]\d{2}[-/.]\d{2}[^\r\n]*(?:palette|\u914d\u8272)[^\r\n]*\n"
-        r"[ \t]*#[^\r\n]*(?:creator|user|\u7528\u6236)[^\r\n]*(?:\u56de\u994b|feedback)[^\r\n]*$",
-        "    # PUBLIC_FIXTURE: use a high-contrast outlined accent palette and validate it on source frames.",
-        result,
-        flags=re.I,
-    )
-    result = re.sub(
-        r"(?m)^[ \t]*#[^\r\n]*(?:creator|user|\u7528\u6236)[^\r\n]*"
-        r"20\d{2}[-/.]\d{2}[-/.]\d{2}[^\r\n]*white-first[^\r\n]*$",
-        "# PUBLIC_FIXTURE: use white-first captions; reserve accents for verified emphasis and key facts.",
-        result,
-        flags=re.I,
-    )
-    result = re.sub(
-        r"(?ms)^#\s*\u597d\u8a18\u7684\u5225\u540d[^\r\n]*20\d{2}[-/.]\d{2}[-/.]\d{2}.*?(?=^(?:COLOR_ALIAS|NICHE_PALETTES)\s*=)",
-        "# PUBLIC_FIXTURE: aliases prevent full-name palette tokens from silently falling back; verify emitted ASS colors.\n",
-        result,
-    )
-    result = re.sub(
-        r"(?m)^#\s*\u2500\u2500\s*\u591a\u8272\u91cd\u9ede\u5b57.*$",
-        "# ── Profile-selected emphasis colors use valid ASS inline BGR tags ──",
-        result,
-    )
-    result = re.sub(
-        r"(?m)^#\s*\u2500\u2500\s*niche\s*→\s*\u914d\u8272\s*/\s*\u5b57\u9ad4\s*\u5c0d\u7167.*$",
-        "# ── Niche palette/font starter map; project profiles may override it ──",
-        result,
-        flags=re.I,
-    )
-    return result
-
-
-def _silent_vlog_constants(text: str) -> str:
-    public = re.sub(
-        r"(?m)^#\s*M\d+\s*\(20\d{2}[-/.]\d{2}[-/.]\d{2}\):[^\r\n]*"
-        r"(?:creator|user|\u7528\u6236)[^\r\n]*$",
-        "# PUBLIC_FIXTURE: use a readable sans hierarchy; narrative serif is an optional profile-selected contrast.",
-        _lf(text),
-        flags=re.I,
-    )
-    return re.sub(
-        r"(?m)^#[^\r\n]*(?:creator|user|\u7528\u6236)\s+v\d+[^\r\n]*"
-        r"(?:->|\u2192)\s*v\d+[^\r\n]*$",
-        "# PUBLIC_FIXTURE: keep portrait captions in one stable center-lower lane inside platform safe zones.",
-        public,
-        flags=re.I,
-    )
-
-
 def _shorts_gate(text: str) -> str:
     text, count = re.subn(
         r"(?ms)^# ── S-R 閱讀速率.*?(?=^SR_WARN\s*=)",
@@ -228,7 +152,18 @@ def _shorts_gate(text: str) -> str:
     )
     if count != 1:
         raise ValueError("public sanitizer expected the S-R calibration comment block")
-    return text
+    text = _subn_once(r"(?<=直式 Shorts 機械閘門)（20\d{2}-\d{2}-\d{2}[^）\n]*）", "（公開版）",
+                      text, "dated shorts-gate origin note")
+    text = _subn_once(r"(?ms)^spec 結構（一支 Short）:\n    \{\n.*?^    \}\n",
+                      PUBLIC_SHORTS_SPEC_EXAMPLE, text, "shorts spec example")
+    text = _subn_once(r"(?ms)^# ── S-P 高風險宣稱 lint.*?(?=^RISKY_PATTERNS\s*=)",
+                      PUBLIC_SHORTS_SP_COMMENT, text, "S-P calibration comment")
+    text = _subn_once(r"(?ms)^# ── S-Q 首幀技術品質.*?(?=^SQ_RATIO\s*=)",
+                      PUBLIC_SHORTS_SQ_COMMENT, text, "S-Q calibration comment")
+    text = _subn_once(r"(?m)^(SQ_RATIO = [0-9.]+[^\n]*?)（[^）\n]*）$",
+                      lambda match: match.group(1).rstrip(), text, "S-Q measured example")
+    # Dated incident notes ("…lesson", "…audit") are maintainer history.
+    return re.sub(r"（20\d{2}-\d{2}-\d{2}[^）\n]*(?:教訓|稽核|抓到)[^）\n]*）", "", text)
 
 
 def _topic_catalog(text: str) -> str:
@@ -241,6 +176,11 @@ def _topic_catalog(text: str) -> str:
     if isinstance(topics.get("beyblade_x"), dict):
         retained = json.loads(json.dumps(topics["beyblade_x"], ensure_ascii=False))
         retained["notes"] = [_generalize_identity(str(note)) for note in retained.get("notes", [])]
+        # Keep franchise-level routing terms only; specific tops are collection data.
+        retained["aliases"] = [
+            alias for alias in retained.get("aliases", [])
+            if re.search(r"(?i)陀螺|beyblade", str(alias))
+        ]
         public_topics["beyblade_x"] = retained
     public_topics["demo_day_trip"] = {
         "aliases": ["示範城", "晨光市場", "綠徑公園", "工藝車站", "河畔步道"],
@@ -294,6 +234,14 @@ PUBLIC_CLEAN_SCRIPT_FIXTURE = '''def _clean_script_fixture():
     return clean'''
 
 
+def _script_gate_commands(text: str) -> str:
+    text = _append_module_docstring_note(
+        text, "PUBLIC_FIXTURE: CTA fixtures name a demo community and a demo host.")
+    text = _replace_private_terms(text, "示範社群")
+    text = re.sub(r"大家好，我是[^，。！!？?\s\"\\]+", "大家好，我是示範主持人", text)
+    return _generalize_project_ids(_generalize_identity(text))
+
+
 def _script_gate(text: str) -> str:
     text = _replace_module_docstring(text, PUBLIC_SCRIPT_GATE_DOC)
     text = _replace_top_assignment(
@@ -310,9 +258,7 @@ def _script_gate(text: str) -> str:
     )
     text = _replace_function(text, "_clean_script_fixture", PUBLIC_CLEAN_SCRIPT_FIXTURE)
     text = re.sub(r"大家好，我是[^，。！!？?\\n]+", "大家好，我是示範主持人", text)
-    text = _replace_hashed_span(
-        text, width=4, digest=_PRIVATE_COMMUNITY_DIGEST, replacement="示範社群",
-    )
+    text = _replace_private_terms(text, "示範社群")
     cleaned = []
     for line in text.splitlines():
         if line.lstrip().startswith("#") and (
@@ -348,9 +294,17 @@ PUBLIC_GROUP_WORDS_DOC = '''    """Convert word timing into caption lines.
 def _word_captions(text: str) -> str:
     text = _replace_module_docstring(text, PUBLIC_WORD_CAPTIONS_DOC)
     text = _replace_function_docstring(text, "group_words", PUBLIC_GROUP_WORDS_DOC)
-    text = _replace_hashed_span(
-        text, width=4, digest=_PRIVATE_COMMUNITY_DIGEST, replacement="示範",
-    )
+    text = _replace_main_block(text, PUBLIC_WORD_CAPTIONS_SELFTEST)
+    text = _subn_once(r"(?m)^(# 阿拉伯數字\+單位)（[^）\n]*）",
+                      lambda match: match.group(1) + "（12.3萬 / 12.5% / $12.34 / 12,345）",
+                      text, "emphasis number examples")
+    text = _subn_once(r"(?m)^(# 行首禁用的方向補語（M108：)[^\n]*$",
+                      lambda match: match.group(1) + "方向補語當行頭 = 上一行被腰斬）",
+                      text, "direction-complement example")
+    text = _subn_once(r"(# M108b：語段 pivot)（[^）\n]*）",
+                      lambda match: match.group(1) + "（片尾收尾語多在句首）",
+                      text, "sign-off pivot example")
+    text = _replace_private_terms(text, "示範")
     cleaned = []
     for line in text.splitlines():
         if line.lstrip().startswith("#") and (
@@ -377,76 +331,18 @@ def _publish_hub(text: str) -> str:
     )
 
 
-PUBLIC_GRADE_DOC = '''"""Color-grade calibration runner (public distribution).
-
-Populate ``REGRESSION`` with creator-owned videos that should pass and
-``BASELINE`` with videos that are measurement-only.  The public kit deliberately
-ships both lists empty: maintainer paths, scores and dated evaluations are not
-fixtures for another creator's thresholds.
-
-PUBLIC_FIXTURE: local calibration media are excluded.
-"""'''
-
-
-def _grade_calibrate(text: str) -> str:
-    text = _replace_module_docstring(text, PUBLIC_GRADE_DOC)
-    text = _replace_top_assignment(text, "REGRESSION", "REGRESSION = []  # PUBLIC_FIXTURE: add creator-owned approved samples")
-    text = _replace_top_assignment(text, "BASELINE", "BASELINE = []  # PUBLIC_FIXTURE: add creator-owned measurement samples")
-    text = _generalize_identity(text)
-    text = text.replace("長片 / vlog", "long-form / vlog")
-    return text
-
-
-def _silent_vlog_checklists(text: str) -> str:
-    text, first = re.subn(
-        r'(?m)^(\s*)"🌪️ TIM PAN[^\n]*",$',
-        r'\1"PUBLIC_FIXTURE: reference craft may be integrated, but outro, face policy, palette, voice, loudness and community proof come from the active creator profile",',
-        _lf(text), count=1,
-    )
-    text, second = re.subn(
-        r'(?m)^(\s*)"VERIFY 0 \(TIM PAN[^\n]*",$',
-        r'\1"VERIFY 0 (PUBLIC_FIXTURE): verify the active creator profile for opening grammar, slogan-card use, loudness, face policy, outro and CTA; no maintainer defaults ship",',
-        text, count=1,
-    )
-    if first != 1 or second != 1:
-        raise ValueError("public sanitizer expected two private-profile checklist entries")
-    return text
-
-
-PUBLIC_SHORTS_TEMPLATE_DOC = '''"""Reusable no-face vertical template (public distribution).
-
-The template preserves structural energy while sourcing face policy, palette,
-voice, outro and CTA from the active creator profile.  It ships no maintainer
-brand phrase, community count or private sign-off.
-
-PUBLIC_FIXTURE: profile-specific outro and community defaults are excluded.
-"""'''
-
-
-def _shorts_template(text: str) -> str:
-    text = _replace_module_docstring(text, PUBLIC_SHORTS_TEMPLATE_DOC)
-    text = _generalize_identity(text)
-    text = re.sub(r"creator brand\s+彩色 outro 卡", "creator-configured outro card", text)
-    text = re.sub(r"軟尾掰掰\s*\+\s*SUBSCRIBE\s*\+\s*[A-Za-z]+", "creator-configured CTA", text)
-    return _generalize_project_ids(text)
-
-
 SANITIZERS = {
     "src/longform_maker/script_rhythm.py": lambda text: _script_rhythm(text),
     "src/channel_tracker.py": _channel_tracker,
-    "src/publish_hub_ops.py": lambda text: _replace_function(text, "create_miaoli_remix_plan", PUBLIC_DEMO_PLAN_FUNCTION),
+    "src/publish_hub_ops.py": lambda text: _replace_function(text, "create_demo_remix_plan", PUBLIC_DEMO_PLAN_FUNCTION),
     "src/remix_planner.py": _remix_planner,
     "src/asset_registry.py": _asset_registry,
-    "src/silent_vlog_maker/checklists.py": _silent_vlog_checklists,
-    "src/silent_vlog_maker/shorts_template.py": _shorts_template,
-    "src/silent_vlog_maker/shorts_vertical.py": _shorts_vertical,
-    "src/silent_vlog_maker/constants.py": _silent_vlog_constants,
     "src/longform_maker/shorts_gate.py": _shorts_gate,
     "knowledge/runtime/topic_research_catalog.json": _topic_catalog,
     "src/longform_maker/script_gate.py": _script_gate,
+    "src/longform_maker/script_gate_commands.py": _script_gate_commands,
     "src/longform_maker/word_captions.py": _word_captions,
     "src/publish_hub_context.py": _publish_hub,
-    "src/longform_maker/grade_calibrate.py": _grade_calibrate,
     "src/longform_maker/LONGFORM_PIPELINE.md": _longform_pipeline,
     "knowledge/autopilot-workflow.md": _autopilot_workflow,
     "codex-skill/video-autopilot/references/autopilot-modes.md": _autopilot_modes,
